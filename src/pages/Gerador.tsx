@@ -216,8 +216,8 @@ const Gerador = () => {
     const timeout = setTimeout(() => controller.abort(), 120000);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error("Faça login primeiro");
+      const { data: { session }, error: sessionError } = await supabase.auth.refreshSession();
+      if (sessionError || !session) throw new Error("Sessão expirada. Faça login novamente.");
 
       const allCenarios = catalogos.flatMap((c) => c.cenarios);
       const cenarioLabel = allCenarios.find((c) => c.id === selectedCenario)?.label || selectedCenario;
@@ -422,6 +422,7 @@ const Gerador = () => {
           </div>
         </div>
       )}
+
       {/* Buttons */}
       <div className="flex gap-3">
         <Button
