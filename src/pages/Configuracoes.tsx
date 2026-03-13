@@ -20,21 +20,16 @@ const Configuracoes = () => {
 
   const checkApiKey = async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/manage-api-key`,
-        {
-          method: "GET",
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        }
-      );
-      const data = await response.json();
-      setHasKey(data.hasKey);
-      setLastUpdated(data.updatedAt);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from("user_api_keys")
+        .select("updated_at")
+        .eq("user_id", user.id)
+        .single();
+      setHasKey(!!data);
+      setLastUpdated(data?.updated_at ?? null);
     } catch {
-      // silent
     } finally {
       setLoading(false);
     }
@@ -43,26 +38,16 @@ const Configuracoes = () => {
   const handleSave = async () => {
     if (!apiKey.trim()) return toast.error("Cole sua API Key");
     setSaving(true);
-
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error("Faça login primeiro");
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/manage-api-key`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ apiKey: apiKey.trim() }),
-        }
-      );
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Erro ao salvar");
-
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Faça login primeiro");
+      const { error } = await supabase
+        .from("user_api_keys")
+        .upsert(
+          { user_id: user.id, api_key: apiKey.trim(), updated_at: new Date().toISOString() },
+          { onConflict: "user_id" }
+        );
+      if (error) throw error;
       setHasKey(true);
       setApiKey("");
       setLastUpdated(new Date().toISOString());
@@ -76,22 +61,12 @@ const Configuracoes = () => {
 
   const handleDelete = async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/manage-api-key`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        }
-      );
-
-      if (response.ok) {
-        setHasKey(false);
-        setLastUpdated(null);
-        toast.success("API Key removida");
-      }
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      await supabase.from("user_api_keys").delete().eq("user_id", user.id);
+      setHasKey(false);
+      setLastUpdated(null);
+      toast.success("API Key removida");
     } catch {
       toast.error("Erro ao remover");
     }
