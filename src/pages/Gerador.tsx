@@ -177,7 +177,6 @@ const Gerador = () => {
   const [fotoBase, setFotoBase] = useState<File | null>(null);
   const [fotoPreview, setFotoPreview] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
-  
   const [generating, setGenerating] = useState(false);
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
 
@@ -212,96 +211,76 @@ const Gerador = () => {
     setGenerating(true);
     toast.info("Gerando ensaio profissional... isso pode levar até 2 minutos");
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
-
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error("Faça login primeiro");
+      // Busca a API key do banco
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Faça login primeiro");
 
-      const allCenarios = catalogos.flatMap((c) => c.cenarios);
-      const cenarioLabel = allCenarios.find((c) => c.id === selectedCenario)?.label || selectedCenario;
+      const { data: keyRow } = await supabase
+        .from("user_api_keys")
+        .select("api_key")
+        .eq("user_id", user.id)
+        .single();
 
-      const formData = new FormData();
-      formData.append("photo", fotoBase);
-      formData.append("prompt", prompt);
-      formData.append("cenario", cenarioLabel);
+      if (!keyRow) {
+        toast.error("Configure sua API Key em Configurações antes de gerar ensaios", { duration: 5000 });
+        return;
+      }
 
-      let response: Response;
-      try {
-        response = await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-imagen`,
-          {
-            method: "POST",
-            headers: { Authorization: `Bearer ${session.access_token}` },
-            body: formData,
-            signal: controller.signal,
-          }
-        );
-      } catch (fetchErr: any) {
-        if (fetchErr.name === "AbortError") {
-          throw new Error("Tempo limite excedido. Tente novamente.");
+      // Converte foto para base64
+      const photoBytes = await fotoBase.arrayBuffer();
+      const photoBase64 = btoa(String.fromCharCode(...new Uint8Array(photoBytes)));
+
+      // Chama Gemini direto do frontend
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-image-generation:generateContent?key=${keyRow.api_key}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: prompt },
+                { inline_data: { mime_type: fotoBase.type || "image/jpeg", data: photoBase64 } }
+              ]
+            }],
+            generationConfig: { responseModalities: ["IMAGE", "TEXT"] }
+          })
         }
-        throw new Error("Erro de conexão. Verifique sua internet e tente novamente.");
+      );
+
+      const geminiData = await geminiRes.json();
+
+      if (!geminiRes.ok) {
+        throw new Error(geminiData?.error?.message || "Erro ao gerar imagem");
       }
 
-      let responseData: any;
-      try {
-        const text = await response.text();
-        responseData = text ? JSON.parse(text) : {};
-      } catch {
-        throw new Error(`Erro ${response.status}: Resposta inválida do servidor`);
-      }
+      const imagePart = geminiData?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
+      if (!imagePart) throw new Error("Nenhuma imagem foi retornada. Tente novamente.");
 
-      if (!response.ok) {
-        if (responseData?.needsApiKey) {
-          toast.error("Configure sua API Key em Configurações antes de gerar ensaios", { duration: 5000 });
-          return;
-        }
-        throw new Error(responseData?.error || `Erro ${response.status}: Falha na geração`);
-      }
-
-      if (!responseData.generatedUrl) {
-        throw new Error("Nenhuma imagem foi retornada. Tente novamente.");
-      }
-
-      setGeneratedUrl(responseData.generatedUrl);
+      // Converte base64 para blob e exibe
+      const imageBytes = Uint8Array.from(atob(imagePart.inlineData.data), c => c.charCodeAt(0));
+      const blob = new Blob([imageBytes], { type: "image/png" });
+      const url = URL.createObjectURL(blob);
+      setGeneratedUrl(url);
       toast.success("Ensaio gerado com sucesso!");
     } catch (e: any) {
       console.error("Gerador error:", e);
       toast.error(e.message || "Erro ao gerar ensaio");
     } finally {
-      clearTimeout(timeout);
       setGenerating(false);
     }
   };
 
-  const handleDownload = async () => {
+  const handleDownload = () => {
     if (!generatedUrl) return;
-    try {
-      const bucketPath = generatedUrl.split("/storage/v1/object/public/photos/")[1];
-      let blob: Blob;
-      if (bucketPath) {
-        const { data, error } = await supabase.storage.from("photos").download(decodeURIComponent(bucketPath));
-        if (error || !data) throw new Error("Erro ao baixar");
-        blob = data;
-      } else {
-        const res = await fetch(generatedUrl);
-        if (!res.ok) throw new Error("Erro ao baixar");
-        blob = await res.blob();
-      }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `ensaio-${selectedCenario}-${Date.now()}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast.success("Download iniciado!");
-    } catch {
-      toast.error("Erro no download");
-    }
+    const a = document.createElement("a");
+    a.href = generatedUrl;
+    a.download = `ensaio-${selectedCenario}-${Date.now()}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast.success("Download iniciado!");
   };
 
   return (
